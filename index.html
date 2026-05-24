@@ -102,14 +102,14 @@
             const [searchTerm, setSearchTerm] = useState('');
 
             // Supabase Client Ref
-            const [supabase, setSupabase] = useState(null);
+            const [supabaseClient, setSupabaseClient] = useState(null);
 
             // Check configuration on mount
             useEffect(() => {
                 if (supabaseUrl && supabaseAnonKey) {
                     try {
-                        const client = supabasejs.createClient(supabaseUrl, supabaseAnonKey);
-                        setSupabase(client);
+                        const client = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+                        setSupabaseClient(client);
                         setIsConfigured(true);
                     } catch (e) {
                         setIsConfigured(false);
@@ -157,12 +157,12 @@
 
             // Fetch loop when configured
             useEffect(() => {
-                if (isConfigured && supabase) {
-                    fetchData(supabase);
-                    const interval = setInterval(() => fetchData(supabase), 30000); // refresh every 30s
+                if (isConfigured && supabaseClient) {
+                    fetchData(supabaseClient);
+                    const interval = setInterval(() => fetchData(supabaseClient), 30000); // refresh every 30s
                     return () => clearInterval(interval);
                 }
-            }, [isConfigured, supabase]);
+            }, [isConfigured, supabaseClient]);
 
             // Save credentials handler
             const handleConfigure = async (e) => {
@@ -181,7 +181,7 @@
 
                 try {
                     // Test fetch to verify connection
-                    const client = supabasejs.createClient(cleanedUrl, cleanedKey);
+                    const client = window.supabase.createClient(cleanedUrl, cleanedKey);
                     const { data, error } = await client
                         .from('data_transaction')
                         .select('*')
@@ -196,7 +196,7 @@
                     localStorage.setItem('owner_supabase_key', cleanedKey);
                     setSupabaseUrl(cleanedUrl);
                     setSupabaseAnonKey(cleanedKey);
-                    setSupabase(client);
+                    setSupabaseClient(client);
                     setIsConfigured(true);
                 } catch (err) {
                     console.error(err);
@@ -212,7 +212,7 @@
                 localStorage.removeItem('owner_supabase_key');
                 setSupabaseUrl('');
                 setSupabaseAnonKey('');
-                setSupabase(null);
+                setSupabaseClient(null);
                 setIsConfigured(false);
                 setTransactions([]);
                 setActiveSessions([]);
@@ -403,7 +403,7 @@
 
                             <div class="flex items-center gap-3">
                                 <button 
-                                    onClick={() => fetchData(supabase)} 
+                                    onClick={() => fetchData(supabaseClient)} 
                                     disabled={isLoadingData}
                                     class="p-2.5 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 rounded-xl transition-all disabled:opacity-50"
                                     title="Segarkan data sekarang"
