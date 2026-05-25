@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Owner Web Dashboard - Ky Billing Cloud</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM (Production UMD) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel for JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Supabase JS Client -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f7ff',
+                            100: '#e0effe',
+                            200: '#bae0fd',
+                            300: '#7cc8fc',
+                            400: '#38abf8',
+                            500: '#0e90e6',
+                            600: '#0273c5',
+                            700: '#035ca1',
+                            800: '#074f85',
+                            900: '#0c426e',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0b0f19;
+            color: #f3f4f6;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(14, 144, 230, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
+            background-attachment: fixed;
+        }
+        /* Hide scrollbars for slick look */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #334155;
+        }
+    </style>
+</head>
+<body class="dark font-sans antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Patch Date constructor globally to parse SQLite UTC timestamps correctly
+        const OriginalDate = window.Date;
+        function PatchedDate(...args) {
+            if (!(this instanceof PatchedDate)) {
+                return OriginalDate();
+            }
+            if (args.length === 1 && typeof args[0] === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(args[0])) {
+                return new OriginalDate(args[0].replace(' ', 'T') + 'Z');
+            }
+            return new OriginalDate(...args);
+        }
+        PatchedDate.prototype = OriginalDate.prototype;
+        PatchedDate.now = OriginalDate.now;
+        PatchedDate.UTC = OriginalDate.UTC;
+        PatchedDate.parse = OriginalDate.parse;
+        window.Date = PatchedDate;
+
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        function Icon({ name, className = '', class: classProp = '', ...props }) {
+            const ref = useRef(null);
+            const finalClass = className || classProp;
+            useEffect(() => {
+                if (ref.current && typeof lucide !== 'undefined') {
+                    ref.current.innerHTML = `<i data-lucide="${name}" class="${finalClass}"></i>`;
+                    lucide.createIcons({
+                        root: ref.current
+                    });
+                }
+            }, [name, finalClass]);
+
+            return <span ref={ref} className="inline-flex items-center justify-center" {...props}></span>;
+        }
+
+        function App() {
+            // State for credentials
+            const [supabaseUrl, setSupabaseUrl] = useState(() => localStorage.getItem('owner_supabase_url') || '');
+            const [supabaseAnonKey, setSupabaseAnonKey] = useState(() => localStorage.getItem('owner_supabase_key') || '');
+            const [isConfigured, setIsConfigured] = useState(false);
+            const [errorMsg, setErrorMsg] = useState('');
+            const [isChecking, setIsChecking] = useState(false);
+
+            // Inputs for form
+            const [inputUrl, setInputUrl] = useState(supabaseUrl);
+            const [inputKey, setInputKey] = useState(supabaseAnonKey);
+
+            // Data State
+            const [transactions, setTransactions] = useState([]);
+            const [activeSessions, setActiveSessions] = useState([]);
+            const [devices, setDevices] = useState([]);
+            const [isLoadingData, setIsLoadingData] = useState(false);
+            const [lastUpdated, setLastUpdated] = useState(null);
+
+            // Filter States
+            const [dateFilter, setDateFilter] = useState('all'); // today, yesterday, 7days, 30days, all
+            const [customStartDate, setCustomStartDate] = useState('');
+            const [customEndDate, setCustomEndDate] = useState('');
+            const [searchTerm, setSearchTerm] = useState('');
+
+            // Supabase Client Ref
+            const [supabaseClient, setSupabaseClient] = useState(null);
+
+            // Check configuration on mount
+            useEffect(() => {
+                if (supabaseUrl && supabaseAnonKey) {
+                    try {
+                        const client = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+                        setSupabaseClient(client);
+                        setIsConfigured(true);
+                    } catch (e) {
+                        setIsConfigured(false);
+                        setErrorMsg('Kredensial Supabase tidak valid.');
+                    }
+                }
+            }, [supabaseUrl, supabaseAnonKey]);
+
+            // Fetch data
+            const fetchData = async (supabaseClient) => {
+                if (!supabaseClient) return;
+                setIsLoadingData(true);
+                try {
+                    // Fetch Transactions
+                    const { data: txData, error: txErr } = await supabaseClient
+                        .from('data_transaction')
+                        .select('*')
+                        .order('transaction_created_at', { ascending: false });
+
+                    if (txErr) throw txErr;
+                    setTransactions(txData || []);
+
+                    // Fetch Devices
+                    const { data: devData, error: devErr } = await supabaseClient
+                        .from('data_device')
+                        .select('*');
+                    if (devErr) throw devErr;
+                    setDevices(devData || []);
+
+                    // Fetch Active Sessions
+                    const { data: billData, error: billErr } = await supabaseClient
+                        .from('data_billing')
+                        .select('*');
+                    if (billErr) throw billErr;
+                    setActiveSessions(billData || []);
+
+                    setLastUpdated(new Date());
+                } catch (err) {
+                    console.error('Error fetching data:', err);
+                    setErrorMsg('Gagal mengambil data dari Supabase. Periksa koneksi internet atau schema tabel.');
+                } finally {
+                    setIsLoadingData(false);
+                }
+            };
+
+            // Fetch loop when configured
+            useEffect(() => {
+                if (isConfigured && supabaseClient) {
+                    fetchData(supabaseClient);
+                    const interval = setInterval(() => fetchData(supabaseClient), 30000); // refresh every 30s
+                    return () => clearInterval(interval);
+                }
+            }, [isConfigured, supabaseClient]);
+
+            // Save credentials handler
+            const handleConfigure = async (e) => {
+                e.preventDefault();
+                setErrorMsg('');
+                setIsChecking(true);
+
+                if (!inputUrl || !inputKey) {
+                    setErrorMsg('Harap isi semua kolom.');
+                    setIsChecking(false);
+                    return;
+                }
+
+                const cleanedUrl = inputUrl.trim().replace(/\/$/, '');
+                const cleanedKey = inputKey.trim();
+
+                try {
+                    // Test fetch to verify connection
+                    const client = window.supabase.createClient(cleanedUrl, cleanedKey);
+                    const { data, error } = await client
+                        .from('data_transaction')
+                        .select('*')
+                        .limit(1);
+
+                    if (error) {
+                        throw error;
+                    }
+
+                    // Save to local storage
+                    localStorage.setItem('owner_supabase_url', cleanedUrl);
+                    localStorage.setItem('owner_supabase_key', cleanedKey);
+                    setSupabaseUrl(cleanedUrl);
+                    setSupabaseAnonKey(cleanedKey);
+                    setSupabaseClient(client);
+                    setIsConfigured(true);
+                } catch (err) {
+                    console.error(err);
+                    setErrorMsg(`Koneksi Gagal: ${err.message || 'Supabase URL atau Anon Key salah, atau tabel data_transaction belum dibuat.'}`);
+                } finally {
+                    setIsChecking(false);
+                }
+            };
+
+            // Logout/Disconnect
+            const handleDisconnect = () => {
+                localStorage.removeItem('owner_supabase_url');
+                localStorage.removeItem('owner_supabase_key');
+                setSupabaseUrl('');
+                setSupabaseAnonKey('');
+                setSupabaseClient(null);
+                setIsConfigured(false);
+                setTransactions([]);
+                setActiveSessions([]);
+                setDevices([]);
+            };
+
+            // Date filtering calculations
+            const filteredTransactions = useMemo(() => {
+                return transactions.filter(tx => {
+                    const txDate = new Date(tx.transaction_created_at);
+                    const now = new Date();
+                    
+                    // Search term filter
+                    const matchesSearch = 
+                        tx.transaction_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        tx.transaction_payment_method.toLowerCase().includes(searchTerm.toLowerCase());
+
+                    if (!matchesSearch) return false;
+
+                    if (dateFilter === 'today') {
+                        return txDate.toDateString() === now.toDateString();
+                    } else if (dateFilter === 'yesterday') {
+                        const yesterday = new Date();
+                        yesterday.setDate(now.getDate() - 1);
+                        return txDate.toDateString() === yesterday.toDateString();
+                    } else if (dateFilter === '7days') {
+                        const sevenDaysAgo = new Date();
+                        sevenDaysAgo.setDate(now.getDate() - 7);
+                        return txDate >= sevenDaysAgo;
+                    } else if (dateFilter === '30days') {
+                        const thirtyDaysAgo = new Date();
+                        thirtyDaysAgo.setDate(now.getDate() - 30);
+                        return txDate >= thirtyDaysAgo;
+                    } else if (dateFilter === 'custom') {
+                        if (!customStartDate || !customEndDate) return true;
+                        const start = new Date(customStartDate);
+                        const end = new Date(customEndDate);
+                        end.setHours(23, 59, 59, 999);
+                        return txDate >= start && txDate <= end;
+                    }
+                    return true; // 'all'
+                });
+            }, [transactions, dateFilter, customStartDate, customEndDate, searchTerm]);
+
+            // Financial Summaries
+            const summary = useMemo(() => {
+                let grossCash = 0;
+                let grossQRIS = 0;
+                let grossBank = 0; // standard transfer/card
+                let totalExpenses = 0;
+
+                filteredTransactions.forEach(tx => {
+                    const amount = Number(tx.transaction_total_amount);
+                    if (tx.transaction_type === 'expense') {
+                        totalExpenses += amount;
+                    } else {
+                        // income
+                        const method = (tx.transaction_payment_method || 'cash').toLowerCase();
+                        if (method === 'cash') {
+                            grossCash += amount;
+                        } else if (method === 'qris') {
+                            grossQRIS += amount;
+                        } else {
+                            grossBank += amount;
+                        }
+                    }
+                });
+
+                const grossIncome = grossCash + grossQRIS + grossBank;
+                const netRevenue = grossIncome - totalExpenses;
+                
+                // CRITICAL REQUEST #4: Total Tunai dikurang Uang Keluar Tunai (Operator Expenses)
+                // Assuming all expenses logged in data_transaction represent cash out
+                const netCash = grossCash - totalExpenses;
+
+                return {
+                    grossIncome,
+                    grossCash,
+                    grossQRIS,
+                    grossBank,
+                    totalExpenses,
+                    netRevenue,
+                    netCash
+                };
+            }, [filteredTransactions]);
+
+            // Get device name helper
+            const getDeviceName = (deviceId) => {
+                const dev = devices.find(d => d.device_id === deviceId);
+                return dev ? dev.device_name : `Device ${deviceId}`;
+            };
+
+            const projectDomain = useMemo(() => {
+                if (!supabaseUrl) return '';
+                return supabaseUrl.replace('https://', '').split('.')[0];
+            }, [supabaseUrl]);
+
+            // Icons now managed dynamically by local Icon component
+
+            if (!isConfigured) {
+                return (
+                    <div class="min-h-screen flex items-center justify-center p-4">
+                        <div class="w-full max-w-lg bg-[#111827]/80 backdrop-blur-xl border border-slate-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+                            <div class="absolute -top-10 -left-10 w-40 h-40 bg-brand-500/20 rounded-full blur-3xl"></div>
+                            <div class="absolute -bottom-10 -right-10 w-40 h-40 bg-purple-500/10 rounded-full blur-3xl"></div>
+                            
+                            <div class="flex flex-col items-center mb-8 relative z-10">
+                                <div class="p-4 bg-brand-500/10 border border-brand-500/30 rounded-2xl mb-4 text-brand-400">
+                                    <Icon name="cloud-lightning" class="w-12 h-12" />
+                                </div>
+                                <h1 class="text-3xl font-extrabold tracking-tight text-white">Ky Billing Cloud</h1>
+                                <p class="text-slate-400 text-sm text-center mt-2">
+                                    Dashboard Pemantauan Keuangan & Billing Real-time khusus Pemilik.
+                                </p>
+                            </div>
+
+                            <form onSubmit={handleConfigure} class="space-y-6 relative z-10">
+                                {errorMsg && (
+                                    <div class="bg-red-500/10 border border-red-500/30 text-red-200 text-xs px-4 py-3 rounded-xl flex items-start gap-2">
+                                        <Icon name="alert-circle" class="w-4 h-4 mt-0.5 flex-shrink-0 text-red-400" />
+                                        <span>{errorMsg}</span>
+                                    </div>
+                                )}
+
+                                <div class="space-y-2">
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300">Supabase Project URL</label>
+                                    <div class="relative">
+                                        <input 
+                                            type="text" 
+                                            value={inputUrl}
+                                            onChange={e => setInputUrl(e.target.value)}
+                                            placeholder="https://xxxxxxxx.supabase.co" 
+                                            class="w-full bg-[#0b0f19] border border-slate-700 focus:border-brand-500 rounded-xl px-4 py-3 text-white text-sm outline-none transition-all placeholder-slate-600"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div class="space-y-2">
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300">Supabase API Anon Key</label>
+                                    <div class="relative">
+                                        <input 
+                                            type="password" 
+                                            value={inputKey}
+                                            onChange={e => setInputKey(e.target.value)}
+                                            placeholder="eyJhbGciOiJIUzI1NiIsInR5c..." 
+                                            class="w-full bg-[#0b0f19] border border-slate-700 focus:border-brand-500 rounded-xl px-4 py-3 text-white text-sm outline-none transition-all placeholder-slate-600"
+                                        />
+                                    </div>
+                                </div>
+
+                                <button 
+                                    type="submit" 
+                                    disabled={isChecking}
+                                    class="w-full bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-4 rounded-xl transition-all shadow-lg hover:shadow-brand-500/20 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-2"
+                                >
+                                    {isChecking ? (
+                                        <span class="inline-block animate-spin border-2 border-white border-t-transparent rounded-full w-5 h-5"></span>
+                                    ) : (
+                                        <>
+                                            <span>Hubungkan & Buka Dashboard</span>
+                                            <Icon name="arrow-right" class="w-4 h-4" />
+                                        </>
+                                    )}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div class="min-h-screen pb-16">
+                    {/* Header */}
+                    <header class="border-b border-slate-800 bg-[#0f172a]/60 backdrop-blur-md sticky top-0 z-40">
+                        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="p-2.5 bg-brand-500/10 border border-brand-500/30 rounded-xl text-brand-400">
+                                    <Icon name="cloud-lightning" class="w-6 h-6" />
+                                </div>
+                                <div>
+                                    <h1 class="text-xl font-bold text-white tracking-tight">Ky Billing Owner Dashboard</h1>
+                                    <p class="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
+                                        <span class="inline-block w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></span>
+                                        Terkoneksi ke Cloud DB ({projectDomain}) • Terakhir di-update: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Menghubungkan...'}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center gap-3">
+                                <button 
+                                    onClick={() => fetchData(supabaseClient)} 
+                                    disabled={isLoadingData}
+                                    class="p-2.5 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 rounded-xl transition-all disabled:opacity-50"
+                                    title="Segarkan data sekarang"
+                                >
+                                    <Icon name="refresh-cw" class={`w-5 h-5 ${isLoadingData ? 'animate-spin' : ''}`} />
+                                </button>
+                                
+                                <button 
+                                    onClick={handleDisconnect}
+                                    class="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-200 border border-red-500/30 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-95"
+                                >
+                                    <Icon name="log-out" class="w-4 h-4" />
+                                    <span class="hidden sm:inline">Putuskan</span>
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Main Content Area */}
+                    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-8">
+                        
+                        {/* 1. FINANCIAL CARDS SUMMARY */}
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                            
+                            {/* Card 1: Gross Income */}
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm relative overflow-hidden">
+                                <div class="absolute top-0 right-0 w-24 h-24 bg-brand-500/5 rounded-full blur-xl"></div>
+                                <div class="flex items-center justify-between mb-4">
+                                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Pendapatan Kotor</span>
+                                    <div class="p-2 bg-brand-500/10 text-brand-400 rounded-lg">
+                                        <Icon name="trending-up" class="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <h3 class="text-2xl font-bold text-white">Rp {summary.grossIncome.toLocaleString('id-ID')}</h3>
+                                <p class="text-xs text-slate-400 mt-2">Seluruh pemasukan kotor dari POS & Sewa.</p>
+                            </div>
+
+                            {/* Card 2: Net Revenue */}
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm relative overflow-hidden">
+                                <div class="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl"></div>
+                                <div class="flex items-center justify-between mb-4">
+                                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Pendapatan Bersih (Net)</span>
+                                    <div class="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
+                                        <Icon name="dollar-sign" class="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <h3 class="text-2xl font-bold text-emerald-400">Rp {summary.netRevenue.toLocaleString('id-ID')}</h3>
+                                <p class="text-xs text-slate-400 mt-2">Pemasukan kotor dikurangi biaya pengeluaran.</p>
+                            </div>
+
+                            {/* Card 3: Operator Expenses (Uang Keluar) */}
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm relative overflow-hidden">
+                                <div class="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-xl"></div>
+                                <div class="flex items-center justify-between mb-4">
+                                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Pengeluaran Operator (Uang Keluar)</span>
+                                    <div class="p-2 bg-red-500/10 text-red-400 rounded-lg">
+                                        <Icon name="shopping-cart" class="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <h3 class="text-2xl font-bold text-red-400">Rp {summary.totalExpenses.toLocaleString('id-ID')}</h3>
+                                <p class="text-xs text-slate-400 mt-2">Total kas keluar untuk operasional kasir.</p>
+                            </div>
+
+                            {/* Card 4: Net Tunai (Cash) */}
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm relative overflow-hidden">
+                                <div class="absolute top-0 right-0 w-24 h-24 bg-yellow-500/5 rounded-full blur-xl"></div>
+                                <div class="flex items-center justify-between mb-4">
+                                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Net Tunai (Cash di Laci)</span>
+                                    <div class="p-2 bg-yellow-500/10 text-yellow-400 rounded-lg">
+                                        <Icon name="wallet" class="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <h3 class="text-2xl font-bold text-yellow-400">Rp {summary.netCash.toLocaleString('id-ID')}</h3>
+                                <p class="text-xs text-slate-300 font-medium mt-2">
+                                    Pemasukan Tunai - Pengeluaran Tunai
+                                </p>
+                            </div>
+
+                        </div>
+
+                        {/* 2. REVENUE SEPARATION BY METHODS */}
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-orange-500/10 text-orange-400 rounded-xl">
+                                        <Icon name="banknote" class="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <h4 class="font-bold text-white text-base">Pendapatan Tunai (Cash)</h4>
+                                        <p class="text-xs text-slate-400 mt-0.5">Uang fisik yang diterima kasir</p>
+                                    </div>
+                                </div>
+                                <div class="mt-6">
+                                    <div class="text-2xl font-extrabold text-white">Rp {summary.grossCash.toLocaleString('id-ID')}</div>
+                                    <div class="text-xs text-slate-400 mt-1">Belum dipotong uang keluar operator</div>
+                                </div>
+                            </div>
+
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-blue-500/10 text-blue-400 rounded-xl">
+                                        <Icon name="qr-code" class="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <h4 class="font-bold text-white text-base">Pendapatan QRIS</h4>
+                                        <p class="text-xs text-slate-400 mt-0.5">Transaksi e-wallet instan</p>
+                                    </div>
+                                </div>
+                                <div class="mt-6">
+                                    <div class="text-2xl font-extrabold text-blue-400">Rp {summary.grossQRIS.toLocaleString('id-ID')}</div>
+                                    <div class="text-xs text-slate-400 mt-1">Uang langsung masuk akun QRIS</div>
+                                </div>
+                            </div>
+
+                            <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-indigo-500/10 text-indigo-400 rounded-xl">
+                                        <Icon name="credit-card" class="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <h4 class="font-bold text-white text-base">Pendapatan Bank (Transfer)</h4>
+                                        <p class="text-xs text-slate-400 mt-0.5">Transfer rekening bank & edc</p>
+                                    </div>
+                                </div>
+                                <div class="mt-6">
+                                    <div class="text-2xl font-extrabold text-indigo-400">Rp {summary.grossBank.toLocaleString('id-ID')}</div>
+                                    <div class="text-xs text-slate-400 mt-1">Masuk ke rekening bank terdaftar</div>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        {/* 3. MONITOR SESI BILLING AKTIF */}
+                        <div class="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-sm">
+                            <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-brand-500/10 text-brand-400 rounded-xl">
+                                        <Icon name="tv" class="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-bold text-white">Monitor Sesi Billing Aktif</h3>
+                                        <p class="text-xs text-slate-400 mt-0.5">Sesi warnet/arcade yang sedang berjalan saat ini secara langsung.</p>
+                                    </div>
+                                </div>
+                                <span class="bg-brand-500/10 text-brand-300 border border-brand-500/20 px-3 py-1 text-xs rounded-full font-bold">
+                                    {activeSessions.length} Perangkat Aktif
+                                </span>
+                            </div>
+
+                            {activeSessions.length === 0 ? (
+                                <div class="flex flex-col items-center justify-center py-12 text-slate-500 border border-dashed border-slate-800 rounded-2xl bg-[#0b0f19]/30">
+                                    <Icon name="inbox" class="w-12 h-12 mb-3 text-slate-600" />
+                                    <p class="text-sm font-medium">Tidak ada sesi sewa aktif saat ini.</p>
+                                    <p class="text-xs text-slate-600 mt-1">Seluruh perangkat sedang dalam kondisi idle.</p>
+                                </div>
+                            ) : (
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    {activeSessions.map((session) => {
+                                        const startTime = new Date(session.billing_start_time);
+                                        const now = new Date();
+                                        const diffMs = Math.max(0, now - startTime);
+                                        const elapsedMin = Math.floor(diffMs / 60000);
+                                        const elapsedHours = Math.floor(elapsedMin / 60);
+                                        const elapsedRemainingMin = elapsedMin % 60;
+                                        
+                                        return (
+                                            <div key={session.billing_id} class="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 shadow-sm relative overflow-hidden hover:border-slate-700 transition-all">
+                                                <div class="absolute top-0 left-0 w-2 h-full bg-brand-500"></div>
+                                                <div class="flex items-center justify-between mb-4 pl-2">
+                                                    <h4 class="font-bold text-white text-base">{getDeviceName(session.billing_device_id)}</h4>
+                                                    <span class="text-[10px] font-bold px-2 py-0.5 bg-brand-500/10 text-brand-400 rounded-full border border-brand-500/20 uppercase">
+                                                        {session.billing_type === 'fixed' ? 'Fixed Time' : 'Open Time'}
+                                                    </span>
+                                                </div>
+
+                                                <div class="space-y-3 pl-2">
+                                                    <div class="flex justify-between text-xs">
+                                                        <span class="text-slate-400">Pelanggan:</span>
+                                                        <span class="font-semibold text-white">{session.billing_customer_name}</span>
+                                                    </div>
+                                                    <div class="flex justify-between text-xs">
+                                                        <span class="text-slate-400">Mulai Sewa:</span>
+                                                        <span class="font-semibold text-slate-300">{startTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</span>
+                                                    </div>
+                                                    <div class="flex justify-between text-xs">
+                                                        <span class="text-slate-400">Durasi Berjalan:</span>
+                                                        <span class="font-bold text-brand-400">{elapsedHours}j {elapsedRemainingMin}m</span>
+                                                    </div>
+                                                    {session.billing_type === 'fixed' && (
+                                                        <div class="flex justify-between text-xs">
+                                                            <span class="text-slate-400">Sisa Waktu Kasir:</span>
+                                                            <span class="font-bold text-amber-400">{session.billing_current_time} menit</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 4. LAPORAN TRANSAKSI INTERAKTIF */}
+                        <div class="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 shadow-sm">
+                            
+                            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6 border-b border-slate-800 pb-5">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-purple-500/10 text-purple-400 rounded-xl">
+                                        <Icon name="file-text" class="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-bold text-white">Laporan & Riwayat Transaksi</h3>
+                                        <p class="text-xs text-slate-400 mt-0.5">Filter transaksi, POS, pengeluaran kasir.</p>
+                                    </div>
+                                </div>
+
+                                {/* Filters */}
+                                <div class="flex flex-wrap items-center gap-3">
+                                    <div class="relative">
+                                        <input 
+                                            type="text"
+                                            value={searchTerm}
+                                            onChange={e => setSearchTerm(e.target.value)}
+                                            placeholder="Cari kode/metode..." 
+                                            class="bg-[#0b0f19] border border-slate-700 focus:border-brand-500 rounded-xl px-4 py-2 text-slate-200 text-xs outline-none transition-all placeholder-slate-600 w-44"
+                                        />
+                                    </div>
+                                    
+                                    <select 
+                                        value={dateFilter}
+                                        onChange={e => setDateFilter(e.target.value)}
+                                        class="bg-[#0b0f19] border border-slate-700 rounded-xl px-3 py-2 text-slate-200 text-xs outline-none focus:border-brand-500"
+                                    >
+                                        <option value="today">Hari Ini</option>
+                                        <option value="yesterday">Kemarin</option>
+                                        <option value="7days">7 Hari Terakhir</option>
+                                        <option value="30days">30 Hari Terakhir</option>
+                                        <option value="custom">Rentang Custom</option>
+                                        <option value="all">Semua Data</option>
+                                    </select>
+
+                                    {dateFilter === 'custom' && (
+                                        <div class="flex items-center gap-2">
+                                            <input 
+                                                type="date"
+                                                value={customStartDate}
+                                                onChange={e => setCustomStartDate(e.target.value)}
+                                                class="bg-[#0b0f19] border border-slate-700 rounded-xl px-2 py-1.5 text-slate-200 text-xs outline-none"
+                                            />
+                                            <span class="text-slate-500 text-xs">-</span>
+                                            <input 
+                                                type="date"
+                                                value={customEndDate}
+                                                onChange={e => setCustomEndDate(e.target.value)}
+                                                class="bg-[#0b0f19] border border-slate-700 rounded-xl px-2 py-1.5 text-slate-200 text-xs outline-none"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {filteredTransactions.length === 0 ? (
+                                <div class="flex flex-col items-center justify-center py-16 text-slate-500">
+                                    <Icon name="folder-open" class="w-12 h-12 mb-3 text-slate-600" />
+                                    <p class="text-sm font-medium">Tidak ada transaksi ditemukan.</p>
+                                    <p class="text-xs text-slate-600 mt-1">Harap ganti filter tanggal atau kata pencarian Anda.</p>
+                                </div>
+                            ) : (
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-left text-xs border-collapse">
+                                        <thead>
+                                            <tr class="border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                                                <th class="py-3.5 px-4">Kode Transaksi</th>
+                                                <th class="py-3.5 px-4">Tanggal & Waktu</th>
+                                                <th class="py-3.5 px-4">Tipe</th>
+                                                <th class="py-3.5 px-4">Metode Bayar</th>
+                                                <th class="py-3.5 px-4">Status</th>
+                                                <th class="py-3.5 px-4 text-right">Total Nominal</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-800/50">
+                                            {filteredTransactions.map((tx) => {
+                                                const txDate = new Date(tx.transaction_created_at);
+                                                const isExpense = tx.transaction_type === 'expense';
+                                                
+                                                return (
+                                                    <tr key={tx.transaction_id} class="hover:bg-slate-800/20 transition-all text-slate-300">
+                                                        <td class="py-4 px-4 font-mono font-semibold text-white">{tx.transaction_code}</td>
+                                                        <td class="py-4 px-4">
+                                                            {txDate.toLocaleDateString('id-ID')} - {txDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                                                        </td>
+                                                        <td class="py-4 px-4">
+                                                            <span class={`font-bold px-2 py-0.5 rounded-full text-[10px] ${
+                                                                isExpense ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'
+                                                            }`}>
+                                                                {isExpense ? 'Pengeluaran' : 'Pemasukan'}
+                                                            </span>
+                                                        </td>
+                                                        <td class="py-4 px-4 uppercase font-semibold text-[10px] text-slate-400">{tx.transaction_payment_method}</td>
+                                                        <td class="py-4 px-4 uppercase text-[10px] font-bold">
+                                                            <span class={`${
+                                                                tx.transaction_status === 'completed' || tx.transaction_status === 'paid' ? 'text-green-400' :
+                                                                tx.transaction_status === 'pending' ? 'text-amber-400' : 'text-red-400'
+                                                            }`}>
+                                                                {tx.transaction_status}
+                                                            </span>
+                                                        </td>
+                                                        <td class={`py-4 px-4 text-right font-bold text-sm ${
+                                                            isExpense ? 'text-red-400' : 'text-white'
+                                                        }`}>
+                                                            {isExpense ? '-' : ''}Rp {Number(tx.transaction_total_amount).toLocaleString('id-ID')}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+
+                        </div>
+
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
