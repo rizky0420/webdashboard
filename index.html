@@ -74,6 +74,23 @@
     <div id="root"></div>
 
     <script type="text/babel">
+        // Patch Date constructor globally to parse SQLite UTC timestamps correctly
+        const OriginalDate = window.Date;
+        function PatchedDate(...args) {
+            if (!(this instanceof PatchedDate)) {
+                return OriginalDate();
+            }
+            if (args.length === 1 && typeof args[0] === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(args[0])) {
+                return new OriginalDate(args[0].replace(' ', 'T') + 'Z');
+            }
+            return new OriginalDate(...args);
+        }
+        PatchedDate.prototype = OriginalDate.prototype;
+        PatchedDate.now = OriginalDate.now;
+        PatchedDate.UTC = OriginalDate.UTC;
+        PatchedDate.parse = OriginalDate.parse;
+        window.Date = PatchedDate;
+
         const { useState, useEffect, useMemo, useRef } = React;
 
         function Icon({ name, className = '', class: classProp = '', ...props }) {
